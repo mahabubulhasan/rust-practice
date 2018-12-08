@@ -1,2 +1,6 @@
 # rust-practice
-Trying different things in rust just for learning the language.
+first you might need to change the namespace to `patterns` instead of `rust-practice`
+
+```shell
+$ cargo run search_string poem.txt
+```
