@@ -1,95 +1,22 @@
-pub struct Post{
-    state: Option<Box<dyn State>>,
-    content:String,
-}
+extern crate patterns;
 
-impl Post{
-    pub fn new() -> Post{
-        Post{
-            state: Some(Box::new(Draft{})),
-            content: String::new(),
-        }
-    }
+use std::env;
+use std::process;
+use patterns::Config;
 
-    pub fn approve(&mut self){
-        if let Some(s) = self.state.take(){
-            self.state = Some(s.approve())
-        }
-    }
-
-    pub fn content(&self)-> &str{
-        self.state.as_ref().unwrap().content(&self)
-    }
-
-    pub fn add_text(&mut self, text: &str){
-        self.content.push_str(text);
-    }
-
-    pub fn request_review(&mut self){
-        if let Some(s) = self.state.take(){
-            self.state = Some(s.request_review())
-        }
-    }
-}
-
-trait State{
-    fn request_review(self: Box<Self>) -> Box<dyn State>;
-    fn approve(self: Box<Self>) -> Box<dyn State>;
-
-    fn content<'a>(&self, _post:&'a Post) -> &'a str{
-        ""
-    }
-}
-
-struct Draft{}
-
-impl State for Draft{
-    fn request_review(self:Box<Self>) -> Box<dyn State>{
-        Box::new(PendingReview{})
-    }
-
-    fn approve(self: Box<Self>) -> Box<dyn State>{
-        self
-    }
-}
-
-struct PendingReview{}
-
-impl State for PendingReview{
-    fn request_review(self: Box<Self>) -> Box<dyn State>{
-        self
-    }
-
-    fn approve(self: Box<Self>) -> Box<dyn State>{
-        Box::new(Published{})
-    }
-}
-
-struct Published{}
-
-impl State for Published{
-    fn request_review(self: Box<Self>) -> Box<dyn State>{
-        self
-    }
-
-    fn approve(self: Box<Self>) -> Box<dyn State>{
-        self
-    }
-
-    fn content<'a>(&self, post:&'a Post) -> &'a str{
-        &post.content
-    }
-}
-
+#[allow(unused_variables)]
 fn main() {
-    let mut post = Post::new();
+    let args: Vec<String> = env::args().collect();
 
-    post.add_text("I ate a salad for lunch today");
-    assert_eq!("", post.content());
+    let config = Config::new(&args).unwrap_or_else(|err| {
+        eprintln!("Problem parsing arguments: {}", err);
+        process::exit(1);
+    });
 
-    post.request_review();
-    assert_eq!("", post.content());
 
-    post.approve();
-    assert_eq!("I ate a salad for lunch today", post.content());
+    println!("in file {}", config.filename);
+    if let Err(e) = patterns::run(config){
+        eprintln!("Application error: {}", e);
+        process::exit(1);
+    }
 }
