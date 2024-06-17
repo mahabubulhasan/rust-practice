@@ -1,105 +1,82 @@
-use std::env;
-use std::error::Error;
-use std::fs::read_to_string;
+use std::{
+    sync::{mpsc, Arc, Mutex},
+    thread,
+};
 
-pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
-    let content = read_to_string(config.file_path).expect("Failed to read file");
-
-    let results = if config.ignore_case {
-        search_case_insensitive(&config.query, &content)
-    }else {
-        search(&config.query, &content)
-    };
-
-    for line in results {
-        println!("{line}");
-    }
-    Ok(())
+pub struct ThreadPool {
+    workers: Vec<Worker>,
+    sender: Option<mpsc::Sender<Job>>,
 }
 
-pub struct Config {
-    pub query: String,
-    pub file_path: String,
-    pub ignore_case: bool
-}
+type Job = Box<dyn FnOnce() + Send + 'static>;
 
-impl Config {
-    pub fn build(mut args: impl Iterator<Item = String>) -> Result<Config, &'static str> {
-        args.next();
+impl ThreadPool {
+    pub fn new(size: usize) -> ThreadPool {
+        assert!(size > 0);
+        let mut workers = Vec::with_capacity(size);
+        let (sender, receiver) = mpsc::channel();
+        let receiver = Arc::new(Mutex::new(receiver));
 
-        let query = match args.next() {
-            Some(arg) => arg,
-            None => return Err("Didn't get a query string"),
-        };
+        for id in 0..size {
+            workers.push(Worker::new(id, Arc::clone(&receiver)));
+        }
 
-        let file_path = match args.next() {
-            Some(arg) => arg,
-            None => return Err("Invalid file path")
-        };
-        
-        let ignore_case = env::var("IGNORE_CASE").is_ok();
-
-        Ok(Config { query, file_path, ignore_case })
-    }
-}
-
-pub fn search<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
-    contents
-        .lines()
-        .filter(|line|line.contains(query))
-        .collect()
-}
-
-pub fn search_case_insensitive<'a>(query: &str, content: &'a str) -> Vec<&'a str> {
-    let mut results = Vec::new();
-    let query = query.to_lowercase();
-    for line in content.lines() {
-        if line.to_lowercase().contains(&query) {
-            results.push(line);
+        ThreadPool {
+            workers,
+            sender: Some(sender),
         }
     }
-    results
+
+    pub fn execute<F>(&self, f: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let job = Box::new(f);
+        // self.sender.send(job).unwrap();
+        self.sender.as_ref().unwrap().send(job).unwrap();
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+impl Drop for ThreadPool {
+    fn drop(&mut self) {
+        drop(self.sender.take());
 
-    #[test]
-    fn one_result() {
-        let query = "duct";
-        let contents = "\
-Rust:
-safe, fast, productive.
-Pick three.";
+        for worker in &mut self.workers {
+            println!("Shutting down worker {}", worker.id);
 
-        assert_eq!(vec!["safe, fast, productive."], search(query, contents));
+            if let Some(thread) = worker.thread.take() {
+                thread.join().unwrap();
+            }
+        }
     }
+}
 
-    #[test]
-    fn case_sensitive() {
-        let query = "duct";
-        let contents = "\
-Rust:
-safe, fast, productive.
-Pick three.
-Duct tape.";
+struct Worker {
+    id: usize,
+    thread: Option<thread::JoinHandle<()>>,
+}
 
-        assert_eq!(vec!["safe, fast, productive."], search(query, contents));
-    }
+impl Worker {
+    fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> Worker {
+        let thread = thread::spawn(move || loop {
+            let message = receiver.lock().unwrap().recv();
 
-    #[test]
-    fn case_insensitive() {
-        let query = "rUsT";
-        let contents = "\
-Rust:
-safe, fast, productive.
-Pick three.
-Trust me.";
+            match message {
+                Ok(job) => {
+                    println!("Worker {id} got a job; executing.");
 
-        assert_eq!(
-            vec!["Rust:", "Trust me."],
-            search_case_insensitive(query, contents)
-        );
+                    job();
+                }
+                Err(_) => {
+                    println!("Worker {id} disconnected; shutting down.");
+                    break;
+                }
+            }
+        });
+
+        Worker {
+            id,
+            thread: Some(thread),
+        }
     }
 }
